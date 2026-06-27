@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AI Peace Cam - Pro Edition</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <style>
+        :root {
+            --primary: rgba(255, 255, 255, 0.15);
+            --border: rgba(255, 255, 255, 0.4);
+        }
+
+        body {
+            margin: 0; padding: 0; background: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            height: 100vh; height: 100dvh; overflow: hidden;
+            user-select: none; -webkit-user-select: none;
+        }
+        
+        .app-container {
+            position: relative; width: 100%; height: 100%; max-width: 600px;
+            background: #111; display: flex; flex-direction: column;
+            overflow: hidden; box-shadow: 0 0 40px rgba(0,0,0,0.8);
+        }
+        
+        /* Tutorial Overlay */
+        #tutorialOverlay {
+            position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.9); z-index: 30;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 30px; text-align: center; color: white;
+            transition: opacity 0.5s ease;
+        }
+        #tutorialOverlay h2 { font-size: 24px; margin-bottom: 15px; }
+        #tutorialOverlay p { font-size: 16px; opacity: 0.8; line-height: 1.6; max-width: 400px; }
+        #btnOk {
+            margin-top: 30px; padding: 15px 40px; border-radius: 30px;
+            background: white; color: black; font-weight: bold; cursor: pointer; border: none;
+        }
+
+        .camera-wrapper { position: relative; width: 100%; height: 100%; background-color: #050505; }
+
+        .viewfinder {
+            position: absolute; top: 5%; left: 5%; right: 5%; bottom: 15%;
+            border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 20px;
+            pointer-events: none; z-index: 10; transition: border-color 0.2s ease;
+        }
+        .viewfinder::before, .viewfinder::after {
+            content: ''; position: absolute; width: 30px; height: 30px; border-color: rgba(255, 255, 255, 0.6); border-style: solid;
+        }
+        .viewfinder::before { top: -1px; left: -1px; border-width: 2px 0 0 2px; border-top-left-radius: 20px; }
+        .viewfinder::after { bottom: -1px; right: -1px; border-width: 0 2px 2px 0; border-bottom-right-radius: 20px; }
+
+        video { display: none; } 
+        canvas { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); transition: filter 0.35s ease; filter: contrast(1.05) brightness(1.05); }
+        canvas.blur-active { filter: blur(28px) brightness(1.15) contrast(1.1) saturate(1.2) !important; }
+
+        .controls { position: absolute; bottom: 40px; left: 0; right: 0; display: flex; gap: 20px; justify-content: center; z-index: 20; }
+        button {
+            padding: 16px 36px; border: none; border-radius: 50px; font-size: 16px; font-weight: 600; cursor: pointer;
+            backdrop-filter: blur(15px); background: var(--primary); color: white; border: 1px solid var(--border);
+        }
+        .btn-start { background: rgba(255, 255, 255, 0.9); color: #000; }
+        .btn-stop { background: rgba(255, 59, 48, 0.85); display: none; }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <div id="tutorialOverlay">
+            <h2>Cara Menggunakan</h2>
+            <p>1. Klik "Mulai Kamera" dan berikan izin akses.<br><br>
+               2. Tunjukkan gestur <b>Peace (✌️)</b> di depan kamera.<br><br>
+               3. Layar akan otomatis menjadi blur saat gestur terdeteksi.<br><br>
+               4. Berfungsi di posisi HP manapun!</p>
+            <button id="btnOk">SAYA MENGERTI</button>
+        </div>
+
+        <div class="camera-wrapper">
+            <div class="viewfinder" id="viewfinder"></div>
+            <video id="video" autoplay playsinline muted></video>
+            <canvas id="canvas"></canvas>
+        </div>
+
+        <div class="controls">
+            <button id="btnStart" class="btn-start">Mulai Kamera</button>
+            <button id="btnStop" class="btn-stop">Stop</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const canvasCtx = canvasElement.getContext('2d', { alpha: false }); 
+        const viewfinder = document.getElementById('viewfinder');
+        const btnStart = document.getElementById('btnStart');
+        const btnStop = document.getElementById('btnStop');
+        const overlay = document.getElementById('tutorialOverlay');
+        const btnOk = document.getElementById('btnOk');
+
+        // Logic Tutorial
+        btnOk.addEventListener('click', () => {
+            overlay.style.opacity = '0';
+            setTimeout(() => overlay.style.display = 'none', 500);
+        });
+
+        // --- AI & CAMERA LOGIC ---
+        // (Tetap menggunakan logic MediaPipe & Euclidean Distance yang sudah sempurna sebelumnya)
+        function getDistance(p1, p2) { return Math.hypot(p1.x - p2.x, p1.y - p2.y, p1.z - p2.z); }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.55, minTrackingConfidence: 0.55 });
+
+        hands.onResults((results) => {
+            let isPeaceDetected = false; 
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                for (const lm of results.multiHandLandmarks) {
+                    const w = lm[0];
+                    if (getDistance(lm[8], w) > getDistance(lm[6], w) && 
+                        getDistance(lm[12], w) > getDistance(lm[10], w) && 
+                        getDistance(lm[16], w) < getDistance(lm[14], w) && 
+                        getDistance(lm[20], w) < getDistance(lm[18], w)) {
+                        isPeaceDetected = true; break; 
+                    }
+                }
+            }
+            if (isPeaceDetected) {
+                canvasElement.classList.add('blur-active');
+                viewfinder.style.borderColor = "rgba(76, 175, 80, 0.9)";
+            } else {
+                canvasElement.classList.remove('blur-active');
+                viewfinder.style.borderColor = "rgba(255, 255, 255, 0.15)";
+            }
+            isProcessingAI = false; 
+        });
+
+        // ... (Fungsi drawFrame, startCamera, stopCamera tetap sama seperti sebelumnya) ...
+        let isCameraRunning = false; let isProcessingAI = false;
+        function drawFrame() {
+            if (!isCameraRunning) return;
+            canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+            if (!isProcessingAI && videoElement.readyState >= 2) { isProcessingAI = true; hands.send({image: videoElement}); }
+            requestAnimationFrame(drawFrame);
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280, height: 720 }});
+                videoElement.srcObject = stream;
+                videoElement.onloadedmetadata = () => {
+                    videoElement.play(); isCameraRunning = true;
+                    canvasElement.width = videoElement.videoWidth; canvasElement.height = videoElement.videoHeight;
+                    btnStart.style.display = 'none'; btnStop.style.display = 'flex';
+                    drawFrame();
+                };
+            } catch (err) { alert("Gagal mengakses kamera!"); }
+        }
+
+        function stopCamera() {
+            const tracks = videoElement.srcObject?.getTracks();
+            tracks?.forEach(track => track.stop());
+            isCameraRunning = false; btnStart.style.display = 'flex'; btnStop.style.display = 'none';
+        }
+
+        btnStart.addEventListener('click', startCamera);
+        btnStop.addEventListener('click', stopCamera);
+        videoElement.addEventListener('resize', () => { if (isCameraRunning) { canvasElement.width = videoElement.videoWidth; canvasElement.height = videoElement.videoHeight; }});
+    </script>
+</body>
+</html>
